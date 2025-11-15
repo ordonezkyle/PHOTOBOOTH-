@@ -3,27 +3,51 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>Photobooth</title>
+  <title>Photobooth Pro - Flow</title>
   <link rel="stylesheet" href="styles.css" />
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/qrcodejs/1.0.0/qrcode.min.js"></script>
 </head>
 <body>
-  <h1>Photobooth</h1>
-  <div class="container">
-    <video id="video" autoplay></video>
-    <canvas id="canvas" width="640" height="480"></canvas>
+  <header>
+    <h1>Photobooth Pro</h1>
+    <div class="stage-caption" id="stage-caption">Ready</div>
+  </header>
 
-    <div class="controls">
-      <button id="capture">Capture Photo</button>
-      <button id="download" disabled>Download Photo</button>
+  <div class="stage">
+    <!-- Live video with countdown -->
+    <div class="video-wrap" id="live-stage">
+      <video id="video" autoplay playsinline></video>
+      <div class="countdown" id="countdown" style="display:none;">3</div>
     </div>
 
-    <div class="filters">
-      <button class="filter-btn" data-filter="none">No Filter</button>
-      <button class="filter-btn" data-filter="sepia">Sepia</button>
-      <button class="filter-btn" data-filter="grayscale">Grayscale</button>
-      <button class="filter-btn" data-filter="blur">Blur</button>
+    <!-- Collage canvas (hidden until we have 4 frames) -->
+    <div class="canvas-wrap" id="collage-stage" style="display:none;">
+      <canvas id="canvas" width="640" height="480"></canvas>
     </div>
+
+    <!-- Thumbnails for collage (side)
+         Lightweight previews to show last 4 captures -->
+    <div class="side-thumbs" id="side-thumbs" aria-label="Captured thumbnails"></div>
   </div>
+
+  <div class="mode-toggle">
+    <button id="modeBtn" class="mode-toggle-btn">Collage Mode (4 Photos)</button>
+  </div>
+
+  <div class="controls">
+    <button id="capture" title="Auto-capture with countdown">Capture Photo</button>
+    <button id="download" disabled>Download</button>
+    <button id="reset" class="secondary" disabled>Reset</button>
+  </div>
+
+  <div class="filters" aria-label="Filters">
+    <button class="filter-btn" data-filter="none">No Filter</button>
+    <button class="filter-btn" data-filter="sepia">Sepia</button>
+    <button class="filter-btn" data-filter="grayscale">Grayscale</button>
+    <button class="filter-btn" data-filter="blur">Blur</button>
+  </div>
+
+  <div id="qrcode" aria-label="QR Code"></div>
 
   <script src="script.js"></script>
 </body>
