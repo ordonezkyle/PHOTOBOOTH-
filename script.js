@@ -24,6 +24,7 @@ let collageFormat = '2x2'; // '2x2' or 'vertical'
 let isCollageMode = false; // true when we finished 4 captures
 let isCapturing = false;
 let lastDataURL = ''; // last captured image (or collage) for download/QR
+const API_BASE_URL = 'http://localhost:3000/api'; // Backend API endpoint
 
 // Helper: map visual filter keys to live CSS preview and capture canvas filter strings
 const FILTERS = {
@@ -33,12 +34,83 @@ const FILTERS = {
   hulk: { preview: 'hue-rotate(90deg) saturate(200%) brightness(110%)', capture: 'hue-rotate(90deg) saturate(200%) brightness(110%)' }
 };
 
+// ==================== API Helper Functions ====================
+
+// Save photo to database
+async function savePhotoToDatabase(dataURL, filename) {
+  try {
+    const response = await fetch(`${API_BASE_URL}/photos`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        filename: filename || `photo_${Date.now()}.jpg`,
+        data_url: dataURL
+      })
+    });
+
+    const data = await response.json();
+    if (!response.ok) {
+      console.error('Save error:', data.message);
+      return null;
+    }
+    console.log('✅ Photo saved to database:', data.id);
+    // Generate share URL
+    data.shareURL = `${window.location.origin}/share/photo/${data.id}`;
+    return data;
+  } catch (err) {
+    console.error('❌ Failed to save photo:', err);
+    return null;
+  }
+}
+
+// Save collage to database
+async function saveCollageToDatabase(dataURL, format) {
+  try {
+    const response = await fetch(`${API_BASE_URL}/collages`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        title: `Collage ${format} - ${new Date().toLocaleString()}`,
+        format: format,
+        data_url: dataURL
+      })
+    });
+
+    const data = await response.json();
+    if (!response.ok) {
+      console.error('Save error:', data.message);
+      return null;
+    }
+    console.log('✅ Collage saved to database:', data.id);
+    // Generate share URL
+    data.shareURL = `${window.location.origin}/share/collage/${data.id}`;
+    return data;
+  } catch (err) {
+    console.error('❌ Failed to save collage:', err);
+    return null;
+  }
+}
+
 // Init camera
 async function initCamera() {
   try {
-    const stream = await navigator.mediaDevices.getUserMedia({ video: true });
+    const stream = await navigator.mediaDevices.getUserMedia({
+      video: {
+        width: { ideal: 1280 },
+        height: { ideal: 720 }
+      }
+    });
     video.srcObject = stream;
+
+    // Wait for video to be ready
+    await new Promise((resolve) => {
+      video.onloadedmetadata = () => {
+        resolve();
+      };
+    });
+
     await video.play();
+    console.log('Camera initialized:', video.videoWidth, 'x', video.videoHeight);
   } catch (err) {
     alert("Webcam Error: " + err.message);
     console.error(err);
@@ -127,8 +199,23 @@ function refreshThumbnails() {
 
 // Apply safe capture filter and draw
 function captureFrameToCanvas() {
-  const w = video.videoWidth || 640;
-  const h = video.videoHeight || 480;
+  // Ensure video is ready and has dimensions
+  if (video.videoWidth === 0 || video.videoHeight === 0) {
+    console.warn('Video not ready, using fallback dimensions');
+    canvas.width = 640;
+    canvas.height = 480;
+    ctx.fillStyle = '#000';
+    ctx.fillRect(0, 0, 640, 480);
+    ctx.fillStyle = '#fff';
+    ctx.font = '24px Arial';
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    ctx.fillText('Camera not ready', 320, 240);
+    return canvas.toDataURL('image/jpeg', 0.92);
+  }
+
+  const w = video.videoWidth;
+  const h = video.videoHeight;
   canvas.width = w;
   canvas.height = h;
 
@@ -248,35 +335,39 @@ function drawImageCover(ctxLocal, img, x, y, w, h) {
 }
 
 // QR + download link generation
-function showQRCode(data) {
+async function showQRCode(data) {
   qrCodeContainer.innerHTML = '';
   downloadLinkWrap.innerHTML = '';
   lastDataURL = data;
 
-  // Try to get api.qrserver direct QR for the full data if short enough
   try {
-    if (data && data.startsWith('data:')) {
-      const encoded = encodeURIComponent(data);
-      // limit: only attempt if final URL won't exceed ~2000 characters
-      if (encoded.length < 1800) {
-        const apiUrl = `https://api.qrserver.com/v1/create-qr-code/?size=150x150&data=${encoded}`;
-        const img = document.createElement('img');
-        img.src = apiUrl;
-        img.alt = 'QR Code';
-        qrCodeContainer.appendChild(img);
-      } else {
-        // fallback: short text using local qrcode.js
-        new QRCode(qrCodeContainer, {
-          text: `Photobooth Photo - ${new Date().toLocaleString()}`,
-          width: 150,
-          height: 150,
-          colorDark: "#000000",
-          colorLight: "#ffffff",
-          correctLevel: QRCode.CorrectLevel.L
-        });
-      }
+    // If data is a share URL, generate QR for network-accessible URL
+    if (data && data.includes('/share/')) {
+      // Get network IP for sharing
+      const configResponse = await fetch('/api/config');
+      const config = await configResponse.json();
+      const networkUrl = data.replace('localhost', config.baseURL.split('://')[1].split(':')[0]);
 
-      // Provide a download link for the captured image
+      // Generate QR code for the share URL
+      new QRCode(qrCodeContainer, {
+        text: networkUrl,
+        width: 150,
+        height: 150,
+        colorDark: "#000000",
+        colorLight: "#ffffff",
+        correctLevel: QRCode.CorrectLevel.L
+      });
+
+      // Add text showing the URL
+      const urlText = document.createElement('div');
+      urlText.style.fontSize = '12px';
+      urlText.style.color = '#666';
+      urlText.style.marginTop = '5px';
+      urlText.style.wordBreak = 'break-all';
+      urlText.textContent = networkUrl;
+      qrCodeContainer.appendChild(urlText);
+    } else if (data && data.startsWith('data:')) {
+      // For data URLs, provide direct download link
       const a = document.createElement('a');
       a.href = data;
       a.download = isCollageMode ? 'photobooth_collage.jpg' : 'photobooth_photo.jpg';
@@ -288,7 +379,7 @@ function showQRCode(data) {
       a.style.textDecoration = 'none';
       downloadLinkWrap.appendChild(a);
     } else {
-      // Not data URL - treat as text and use qrcode.js
+      // Default QR for ready state
       new QRCode(qrCodeContainer, {
         text: String(data || 'Photobooth Ready'),
         width: 150,
@@ -338,7 +429,11 @@ async function autoCaptureSequence() {
   // redraw collage into canvas and produce final collage data
   const collageData = redrawCollagePreview();
   lastDataURL = collageData;
-  showQRCode(collageData);
+  
+  // Save collage to database
+  const collageResult = await saveCollageToDatabase(collageData, collageFormat);
+
+  showQRCode(collageResult.shareURL);
   stageCaption.textContent = 'Collage Complete! - Click Download or Capture again';
   isCapturing = false;
   captureBtn.disabled = false;
@@ -355,7 +450,11 @@ async function singleCaptureFlow() {
   downloadBtn.disabled = false;
   resetBtn.disabled = false;
   lastDataURL = dataURL;
-  showQRCode(dataURL);
+  
+  // Save photo to database
+  const photoResult = await savePhotoToDatabase(dataURL, `photo_${Date.now()}.jpg`);
+
+  showQRCode(photoResult.shareURL);
   stageCaption.textContent = 'Photo Ready - Click Download';
   isCapturing = false;
   captureBtn.disabled = false;
