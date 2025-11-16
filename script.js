@@ -12,32 +12,51 @@ const collageStage = document.getElementById('collage-stage');
 const liveStage = document.getElementById('live-stage');
 const filterBtns = document.querySelectorAll('.filter-btn');
 const qrCodeContainer = document.getElementById('qrcode');
+const downloadLinkWrap = document.getElementById('download-link');
+const modeBtn = document.getElementById('modeBtn');
+const formatBtn = document.getElementById('formatBtn');
 
 // State
-let currentFilter = 'none';
-let collageImages = []; // holds data URLs for collage frames
-let isCollageMode = false;
+let currentFilterKey = 'none'; // 'none'|'invert'|'grayscale'|'blur'
+let collageImages = []; // holds data URLs newest-first
 let captureMode = 'collage'; // 'collage' or 'single'
+let collageFormat = '2x2'; // '2x2' or 'vertical'
+let isCollageMode = false; // true when we finished 4 captures
+let isCapturing = false;
+let lastDataURL = ''; // last captured image (or collage) for download/QR
+
+// Helper: map visual filter keys to live CSS preview and capture canvas filter strings
+const FILTERS = {
+  none: { preview: 'none', capture: 'none' },
+  film: { preview: 'sepia(40%) contrast(120%) brightness(110%)', capture: 'sepia(40%) contrast(120%) brightness(110%)' },
+  grayscale: { preview: 'grayscale(100%)', capture: 'grayscale(100%)' },
+  hulk: { preview: 'hue-rotate(90deg) saturate(200%) brightness(110%)', capture: 'hue-rotate(90deg) saturate(200%) brightness(110%)' }
+};
 
 // Init camera
-navigator.mediaDevices.getUserMedia({ video: true })
-  .then(stream => video.srcObject = stream)
-  .catch(err => alert("Webcam Error: " + err));
+async function initCamera() {
+  try {
+    const stream = await navigator.mediaDevices.getUserMedia({ video: true });
+    video.srcObject = stream;
+    await video.play();
+  } catch (err) {
+    alert("Webcam Error: " + err.message);
+    console.error(err);
+  }
+}
 
-// Live filter
+// Preview filter buttons (changes only video preview)
 filterBtns.forEach(btn => {
   btn.addEventListener('click', () => {
-    const f = btn.dataset.filter;
-    if (f === 'sepia') currentFilter = 'sepia(100%)';
-    else if (f === 'grayscale') currentFilter = 'grayscale(100%)';
-    else if (f === 'blur') currentFilter = 'blur(3px)';
-    else currentFilter = 'none';
-    video.style.filter = currentFilter;
+    const key = btn.dataset.filter;
+    currentFilterKey = key;
+    const preview = FILTERS[key]?.preview || 'none';
+    video.style.filter = preview;
+    stageCaption.textContent = captureMode === 'single' ? 'Ready - Single Mode' : 'Ready - Collage Mode';
   });
 });
 
 // Mode toggle
-const modeBtn = document.getElementById('modeBtn');
 modeBtn.addEventListener('click', () => {
   if (captureMode === 'collage') {
     captureMode = 'single';
@@ -46,156 +65,267 @@ modeBtn.addEventListener('click', () => {
     captureMode = 'collage';
     modeBtn.textContent = 'Collage Mode (4 Photos)';
   }
-  // Reset when switching modes
+  // Reset on change
   resetBtn.click();
 });
 
-// Countdown helper
-function startCountdown(seconds, onTick, onFinish) {
-  let rem = seconds;
-  countdownEl.style.display = 'flex';
-  countdownEl.textContent = rem;
-  onTick?.(rem);
-  const t = setInterval(() => {
-    rem--;
-    if (rem <= 0) {
+// Format toggle
+formatBtn.addEventListener('click', () => {
+  if (collageFormat === '2x2') {
+    collageFormat = 'vertical';
+    formatBtn.textContent = 'Vertical Strip';
+  } else {
+    collageFormat = '2x2';
+    formatBtn.textContent = '2x2 Layout';
+  }
+});
+
+// Countdown helper returning Promise
+function startCountdown(seconds, onTick) {
+  return new Promise(resolve => {
+    let rem = seconds;
+    countdownEl.style.display = 'flex';
+    countdownEl.textContent = rem;
+    onTick?.(rem);
+    const t = setInterval(() => {
+      rem--;
+      if (rem < 0) {
+        clearInterval(t);
+        countdownEl.style.display = 'none';
+        resolve();
+      } else {
+        countdownEl.textContent = rem;
+        onTick?.(rem);
+      }
+    }, 1000);
+    // Failsafe (in case)
+    setTimeout(() => {
       clearInterval(t);
       countdownEl.style.display = 'none';
-      onFinish?.();
-    } else {
-      countdownEl.textContent = rem;
-      onTick?.(rem);
-    }
-  }, 1000);
-  return t;
+      resolve();
+    }, (seconds + 1) * 1000 + 200);
+  });
 }
 
-// Draw collage preview (2x2)
-function redrawCollagePreview(dataURLForPreview) {
-  // Show collage stage
-  collageStage.style.display = 'flex';
-  liveStage.style.display = 'none';
-  // Prepare canvas
-  const w = 640, h = 480;
-  canvas.width = w; canvas.height = h;
-  canvas.style.width = '100%';
-  canvas.style.height = '100%';
-  ctx.fillStyle = '#000';
-  ctx.fillRect(0, 0, w, h);
-
-  const frames = collageImages;
-  const pad = 8;
-  const cellW = (w - pad * 3) / 2;
-  const cellH = (h - pad * 3) / 2;
-
-  for (let i = 0; i < 4; i++) {
-    const col = i % 2;
-    const row = Math.floor(i / 2);
-    const x = pad + col * (cellW + pad);
-    const y = pad + row * (cellH + pad);
-    if (frames[i]) {
-      const img = new Image();
-      img.src = frames[i];
-      if (img.complete) {
-        ctx.drawImage(img, x, y, cellW, cellH);
-      } else {
-        img.onload = () => ctx.drawImage(img, x, y, cellW, cellH);
-      }
-    } else {
-      ctx.fillStyle = '#333';
-      ctx.fillRect(x, y, cellW, cellH);
-      ctx.fillStyle = '#666';
-      ctx.font = '14px Arial';
-      ctx.textAlign = 'center';
-      ctx.textBaseline = 'middle';
-      ctx.fillText(`Frame ${i + 1}`, x + cellW / 2, y + cellH / 2);
-    }
-  }
-  // Return data URL for QR or download
-  return canvas.toDataURL('image/jpeg');
-}
-
-// Simple data URL preview for thumbnails
+// Thumbnail refresh
 function refreshThumbnails() {
   sideThumbs.innerHTML = '';
+  // show up to 4 thumbnails (latest-first on top)
   for (let i = 0; i < 4; i++) {
     const img = document.createElement('img');
     img.className = 'thumb';
     img.alt = 'Capture preview';
     img.style.objectFit = 'cover';
-    img.style.background = '#222';
-    img.style.display = i < collageImages.length ? 'block' : 'none';
-    if (i < collageImages.length) img.src = collageImages[i];
+    img.style.display = 'none';
+    if (i < collageImages.length) {
+      img.src = collageImages[i];
+      img.style.display = 'block';
+    }
     sideThumbs.appendChild(img);
   }
 }
 
-// Capture flow: automatic single click per capture with countdown
-let isCapturing = false;
+// Apply safe capture filter and draw
+function captureFrameToCanvas() {
+  const w = video.videoWidth || 640;
+  const h = video.videoHeight || 480;
+  canvas.width = w;
+  canvas.height = h;
 
-// Auto-capture 4 images in sequence
+  // Use save/restore and set ctx.filter explicitly to avoid stacking issues
+  ctx.save();
+  const captureFilter = FILTERS[currentFilterKey]?.capture || 'none';
+  ctx.filter = captureFilter;
+  ctx.drawImage(video, 0, 0, w, h);
+  ctx.restore();
+
+  // produce dataURL (jpg)
+  return canvas.toDataURL('image/jpeg', 0.92);
+}
+
+// Redraw collage (2x2 or vertical strip) into canvas and return dataURL
+function redrawCollagePreview() {
+  // Show canvas and hide live preview
+  collageStage.style.display = 'flex';
+  liveStage.style.display = 'none';
+
+  ctx.save();
+  ctx.fillStyle = '#000';
+
+  if (collageFormat === 'vertical') {
+    // Vertical strip: 4 images stacked vertically
+    const w = 480;
+    const h = 1280;
+    canvas.width = w;
+    canvas.height = h;
+    ctx.fillRect(0, 0, w, h);
+
+    const pad = 12;
+    const cellW = w - pad * 2;
+    const cellH = Math.floor((h - pad * 5) / 4);
+
+    for (let i = 0; i < 4; i++) {
+      const x = pad;
+      const y = pad + i * (cellH + pad);
+
+      if (collageImages[i]) {
+        const img = new Image();
+        img.src = collageImages[i];
+        if (img.complete) {
+          drawImageCover(ctx, img, x, y, cellW, cellH);
+        } else {
+          ((imgCopy, _x, _y, _w, _h) => {
+            imgCopy.onload = () => {
+              drawImageCover(ctx, imgCopy, _x, _y, _w, _h);
+            };
+          })(img, x, y, cellW, cellH);
+        }
+      } else {
+        ctx.fillStyle = '#333';
+        ctx.fillRect(x, y, cellW, cellH);
+        ctx.fillStyle = '#666';
+        ctx.font = '18px Arial';
+        ctx.textAlign = 'center';
+        ctx.textBaseline = 'middle';
+        ctx.fillText(`Frame ${i + 1}`, x + cellW / 2, y + cellH / 2);
+      }
+    }
+  } else {
+    // 2x2 grid layout
+    const w = 1280;
+    const h = 960;
+    canvas.width = w;
+    canvas.height = h;
+    ctx.fillRect(0, 0, w, h);
+
+    const pad = 16;
+    const cellW = Math.floor((w - pad * 3) / 2);
+    const cellH = Math.floor((h - pad * 3) / 2);
+
+    for (let i = 0; i < 4; i++) {
+      const col = i % 2;
+      const row = Math.floor(i / 2);
+      const x = pad + col * (cellW + pad);
+      const y = pad + row * (cellH + pad);
+
+      if (collageImages[i]) {
+        const img = new Image();
+        img.src = collageImages[i];
+        if (img.complete) {
+          drawImageCover(ctx, img, x, y, cellW, cellH);
+        } else {
+          ((imgCopy, _x, _y, _w, _h) => {
+            imgCopy.onload = () => {
+              drawImageCover(ctx, imgCopy, _x, _y, _w, _h);
+            };
+          })(img, x, y, cellW, cellH);
+        }
+      } else {
+        ctx.fillStyle = '#333';
+        ctx.fillRect(x, y, cellW, cellH);
+        ctx.fillStyle = '#666';
+        ctx.font = '24px Arial';
+        ctx.textAlign = 'center';
+        ctx.textBaseline = 'middle';
+        ctx.fillText(`Frame ${i + 1}`, x + cellW / 2, y + cellH / 2);
+      }
+    }
+  }
+
+  ctx.restore();
+  // final dataURL
+  return canvas.toDataURL('image/jpeg', 0.92);
+}
+
+// Utility: draw image in "cover" mode into rect
+function drawImageCover(ctxLocal, img, x, y, w, h) {
+  const iw = img.width, ih = img.height;
+  const r = Math.max(w / iw, h / ih);
+  const nw = iw * r, nh = ih * r;
+  const ox = x + (w - nw) / 2;
+  const oy = y + (h - nh) / 2;
+  ctxLocal.drawImage(img, ox, oy, nw, nh);
+}
+
+// QR + download link generation
+function showQRCode(data) {
+  qrCodeContainer.innerHTML = '';
+  downloadLinkWrap.innerHTML = '';
+  lastDataURL = data;
+
+  // Try to get api.qrserver direct QR for the full data if short enough
+  try {
+    if (data && data.startsWith('data:')) {
+      const encoded = encodeURIComponent(data);
+      // limit: only attempt if final URL won't exceed ~2000 characters
+      if (encoded.length < 1800) {
+        const apiUrl = `https://api.qrserver.com/v1/create-qr-code/?size=150x150&data=${encoded}`;
+        const img = document.createElement('img');
+        img.src = apiUrl;
+        img.alt = 'QR Code';
+        qrCodeContainer.appendChild(img);
+      } else {
+        // fallback: short text using local qrcode.js
+        new QRCode(qrCodeContainer, {
+          text: `Photobooth Photo - ${new Date().toLocaleString()}`,
+          width: 150,
+          height: 150,
+          colorDark: "#000000",
+          colorLight: "#ffffff",
+          correctLevel: QRCode.CorrectLevel.L
+        });
+      }
+
+      // Provide a download link for the captured image
+      const a = document.createElement('a');
+      a.href = data;
+      a.download = isCollageMode ? 'photobooth_collage.jpg' : 'photobooth_photo.jpg';
+      a.textContent = 'Download Image';
+      a.style.color = '#fff';
+      a.style.padding = '6px 10px';
+      a.style.background = '#333';
+      a.style.borderRadius = '6px';
+      a.style.textDecoration = 'none';
+      downloadLinkWrap.appendChild(a);
+    } else {
+      // Not data URL - treat as text and use qrcode.js
+      new QRCode(qrCodeContainer, {
+        text: String(data || 'Photobooth Ready'),
+        width: 150,
+        height: 150,
+        colorDark: "#000000",
+        colorLight: "#ffffff",
+        correctLevel: QRCode.CorrectLevel.L
+      });
+    }
+  } catch (err) {
+    console.error('QR error', err);
+    qrCodeContainer.innerHTML = '<div style="color:#999;font-size:12px">QR Ready</div>';
+  }
+}
+
+// Auto-capture sequence (4 shots)
 async function autoCaptureSequence() {
   for (let i = 0; i < 4; i++) {
     try {
-      // Start countdown and wait for it to finish
-      await new Promise((resolve) => {
-        let rem = 3;
-        countdownEl.style.display = 'flex';
-        countdownEl.textContent = rem;
-        stageCaption.textContent = `Taking in ${rem}s (${i + 1}/4)`;
-        
-        const t = setInterval(() => {
-          rem--;
-          if (rem < 0) {
-            clearInterval(t);
-            countdownEl.style.display = 'none';
-            resolve();
-          } else if (rem >= 0) {
-            countdownEl.textContent = rem;
-            stageCaption.textContent = `Taking in ${rem}s (${i + 1}/4)`;
-          }
-        }, 1000);
-        
-        // Failsafe: resolve after 4 seconds no matter what
-        setTimeout(() => {
-          clearInterval(t);
-          countdownEl.style.display = 'none';
-          resolve();
-        }, 4000);
-      });
-
-      // Capture frame
-      const w = video.videoWidth || 640;
-      const h = video.videoHeight || 480;
-      canvas.width = w;
-      canvas.height = h;
-
-      ctx.filter = currentFilter;
-      ctx.drawImage(video, 0, 0, w, h);
-      ctx.filter = 'none';
-      const dataURL = canvas.toDataURL('image/jpeg');
-
-      // Add to collage
+      stageCaption.textContent = `Taking in 3s (${i + 1}/4)`;
+      await startCountdown(3, (n) => stageCaption.textContent = `Taking in ${n}s (${i + 1}/4)`);
+      // capture
+      const dataURL = captureFrameToCanvas();
+      // add newest at front
       collageImages.unshift(dataURL);
-      if (collageImages.length > 4) collageImages.pop();
-
+      if (collageImages.length > 4) collageImages.length = 4; // trim
       refreshThumbnails();
       downloadBtn.disabled = false;
       resetBtn.disabled = false;
-      
-      // Generate QR code with error handling
-      try {
-        showQRCode(dataURL);
-      } catch (qrError) {
-        console.error('QR generation failed, continuing anyway:', qrError);
-      }
 
-      // Brief pause between captures for visual feedback
-      if (i < 3) {
-        await new Promise(resolve => setTimeout(resolve, 1000));
-      }
-    } catch (error) {
-      console.error('Error during capture sequence:', error);
+      // show QR for the last captured single (not full collage yet)
+      try { showQRCode(dataURL); } catch (e) { console.error(e); }
+
+      // small pause between frames
+      if (i < 3) await new Promise(r => setTimeout(r, 800));
+    } catch (err) {
+      console.error('Capture sequence error', err);
       isCapturing = false;
       captureBtn.disabled = false;
       stageCaption.textContent = 'Error during capture. Click Reset to try again.';
@@ -203,53 +333,60 @@ async function autoCaptureSequence() {
     }
   }
 
-  // All 4 captured
+  // after 4 captures
   isCollageMode = true;
+  // redraw collage into canvas and produce final collage data
+  const collageData = redrawCollagePreview();
+  lastDataURL = collageData;
+  showQRCode(collageData);
   stageCaption.textContent = 'Collage Complete! - Click Download or Capture again';
   isCapturing = false;
   captureBtn.disabled = false;
 }
 
+// Single capture flow
+async function singleCaptureFlow() {
+  stageCaption.textContent = 'Taking in 3s...';
+  await startCountdown(3, n => stageCaption.textContent = `Taking in ${n}s`);
+  const dataURL = captureFrameToCanvas();
+  collageImages = [dataURL];
+  refreshThumbnails();
+  isCollageMode = false;
+  downloadBtn.disabled = false;
+  resetBtn.disabled = false;
+  lastDataURL = dataURL;
+  showQRCode(dataURL);
+  stageCaption.textContent = 'Photo Ready - Click Download';
+  isCapturing = false;
+  captureBtn.disabled = false;
+}
+
+// Capture button
 captureBtn.addEventListener('click', () => {
-  if (isCapturing) return; // Prevent multiple simultaneous captures
+  if (isCapturing) return;
   isCapturing = true;
   captureBtn.disabled = true;
-  
-  // Handle single mode
+
   if (captureMode === 'single') {
-    // Start a 3-second countdown
-    startCountdown(3,
-      (n) => stageCaption.textContent = `Taking in ${n}s`,
-      async () => {
-        // Capture frame
-        const w = video.videoWidth || 640;
-        const h = video.videoHeight || 480;
-        canvas.width = w;
-        canvas.height = h;
-
-        ctx.filter = currentFilter;
-        ctx.drawImage(video, 0, 0, w, h);
-        ctx.filter = 'none';
-        const dataURL = canvas.toDataURL('image/jpeg');
-
-        collageImages = [dataURL];
-        downloadBtn.disabled = false;
-        resetBtn.disabled = false;
-        showQRCode(dataURL);
-        stageCaption.textContent = 'Photo Ready - Click Download';
-        isCapturing = false;
-        captureBtn.disabled = false;
-      }
-    );
+    singleCaptureFlow().catch(err => {
+      console.error(err);
+      isCapturing = false;
+      captureBtn.disabled = false;
+    });
   } else {
-    // Collage mode: auto-capture 4 images
-    autoCaptureSequence();
+    // collage
+    autoCaptureSequence().catch(err => {
+      console.error(err);
+      isCapturing = false;
+      captureBtn.disabled = false;
+    });
   }
 });
 
-// Download handler: downloads collage if ready, else last frame
+// Download button
 downloadBtn.addEventListener('click', () => {
   if (isCollageMode && collageImages.length >= 4) {
+    // Ensure canvas contains collage (higher-res)
     const data = redrawCollagePreview();
     const a = document.createElement('a');
     a.href = data;
@@ -258,12 +395,12 @@ downloadBtn.addEventListener('click', () => {
     a.click();
     document.body.removeChild(a);
     stageCaption.textContent = 'Collage downloaded!';
-    // Switch back to live view after download
-    setTimeout(() => { 
+    // revert view back to live after short delay
+    setTimeout(() => {
       liveStage.style.display = 'flex';
       collageStage.style.display = 'none';
       stageCaption.textContent = 'Collage Complete! - Click Capture to replace or Reset';
-    }, 2000);
+    }, 1500);
   } else if (collageImages.length > 0) {
     const a = document.createElement('a');
     a.href = collageImages[0];
@@ -272,20 +409,10 @@ downloadBtn.addEventListener('click', () => {
     a.click();
     document.body.removeChild(a);
     stageCaption.textContent = 'Photo downloaded!';
-    if (captureMode === 'single') {
-      // In single mode, allow user to capture again
-      setTimeout(() => { 
-        stageCaption.textContent = 'Ready - Single Mode';
-        isCapturing = false;
-        captureBtn.disabled = false;
-      }, 2000);
-    } else {
-      setTimeout(() => { stageCaption.textContent = 'Photo captured'; }, 2000);
-    }
   }
 });
 
-// Reset collage
+// Reset button
 resetBtn.addEventListener('click', () => {
   collageImages = [];
   isCollageMode = false;
@@ -296,36 +423,19 @@ resetBtn.addEventListener('click', () => {
   downloadBtn.disabled = true;
   resetBtn.disabled = true;
   qrCodeContainer.innerHTML = '';
+  downloadLinkWrap.innerHTML = '';
+  lastDataURL = '';
+  // set a friendly ready QR
   showQRCode('Photobooth Ready');
 });
 
-// QR code helper
-function showQRCode(data) {
-  try {
-    qrCodeContainer.innerHTML = "";
-    // Only use short text for QR, not full data URLs
-    let qrText = data;
-    if (data.startsWith('data:')) {
-      // For image data, just show a generic message
-      qrText = 'Photobooth Photo - ' + new Date().toLocaleTimeString();
-    }
-    new QRCode(qrCodeContainer, {
-      text: qrText,
-      width: 150,
-      height: 150,
-      colorDark: "#000000",
-      colorLight: "#ffffff",
-      correctLevel: QRCode.CorrectLevel.L
-    });
-  } catch (error) {
-    console.error('QR Code generation error:', error);
-    qrCodeContainer.innerHTML = '<p style="font-size: 12px; color: #999;">QR Ready</p>';
-  }
-}
-
-// Optional: auto-start with a ready QR (initial state)
+// initial setup
 function init() {
   refreshThumbnails();
   showQRCode('Photobooth Ready');
+  stageCaption.textContent = 'Ready - Collage Mode';
+  downloadBtn.disabled = true;
+  resetBtn.disabled = true;
+  initCamera();
 }
 init();

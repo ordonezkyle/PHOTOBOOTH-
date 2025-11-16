@@ -1,37 +1,39 @@
 <!DOCTYPE html>
 <html lang="en">
 <head>
-  <meta charset="UTF-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>Photobooth Pro - Flow</title>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>PIBOOTH - BSCPE 4</title>
+
   <link rel="stylesheet" href="styles.css" />
+  <!-- qrcode.js for fallback/local QR generation -->
   <script src="https://cdnjs.cloudflare.com/ajax/libs/qrcodejs/1.0.0/qrcode.min.js"></script>
 </head>
 <body>
   <header>
-    <h1>Photobooth Pro</h1>
+    <h1>PiBooth</h1>
     <div class="stage-caption" id="stage-caption">Ready</div>
   </header>
 
-  <div class="stage">
-    <!-- Live video with countdown -->
-    <div class="video-wrap" id="live-stage">
+  <main class="stage">
+    <!-- Live video -->
+    <div class="video-wrap" id="live-stage" aria-live="polite">
       <video id="video" autoplay playsinline></video>
       <div class="countdown" id="countdown" style="display:none;">3</div>
     </div>
 
-    <!-- Collage canvas (hidden until we have 4 frames) -->
+    <!-- Side thumbnails -->
+    <div class="side-thumbs" id="side-thumbs" aria-label="Captured thumbnails"></div>
+
+    <!-- Collage canvas (hidden until needed) -->
     <div class="canvas-wrap" id="collage-stage" style="display:none;">
       <canvas id="canvas" width="640" height="480"></canvas>
     </div>
-
-    <!-- Thumbnails for collage (side)
-         Lightweight previews to show last 4 captures -->
-    <div class="side-thumbs" id="side-thumbs" aria-label="Captured thumbnails"></div>
-  </div>
+  </main>
 
   <div class="mode-toggle">
     <button id="modeBtn" class="mode-toggle-btn">Collage Mode (4 Photos)</button>
+    <button id="formatBtn" class="mode-toggle-btn" style="margin-left: 8px;">2x2 Layout</button>
   </div>
 
   <div class="controls">
@@ -42,12 +44,15 @@
 
   <div class="filters" aria-label="Filters">
     <button class="filter-btn" data-filter="none">No Filter</button>
-    <button class="filter-btn" data-filter="sepia">Sepia</button>
+    <button class="filter-btn" data-filter="film">Film Style</button>
     <button class="filter-btn" data-filter="grayscale">Grayscale</button>
-    <button class="filter-btn" data-filter="blur">Blur</button>
+    <button class="filter-btn" data-filter="hulk">Hulk</button>
   </div>
 
-  <div id="qrcode" aria-label="QR Code"></div>
+  <div id="qwrap" class="qwrap">
+    <div id="qrcode" aria-label="QR Code"></div>
+    <div id="download-link" style="margin-top:8px;"></div>
+  </div>
 
   <script src="script.js"></script>
 </body>
