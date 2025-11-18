@@ -54,8 +54,15 @@ async function savePhotoToDatabase(dataURL, filename) {
       return null;
     }
     console.log('✅ Photo saved to database:', data.id);
-    // Generate share URL
-    data.shareURL = `${window.location.origin}/share/photo/${data.id}`;
+    // Generate network-accessible share URL from server config
+    try {
+      const cfgResp = await fetch('/api/config');
+      const cfg = await cfgResp.json();
+      data.shareURL = `${cfg.baseURL}/share/photo/${data.id}`;
+    } catch (e) {
+      // fallback to origin
+      data.shareURL = `${window.location.origin}/share/photo/${data.id}`;
+    }
     return data;
   } catch (err) {
     console.error('❌ Failed to save photo:', err);
@@ -82,8 +89,15 @@ async function saveCollageToDatabase(dataURL, format) {
       return null;
     }
     console.log('✅ Collage saved to database:', data.id);
-    // Generate share URL
-    data.shareURL = `${window.location.origin}/share/collage/${data.id}`;
+    // Generate network-accessible share URL from server config
+    try {
+      const cfgResp = await fetch('/api/config');
+      const cfg = await cfgResp.json();
+      data.shareURL = `${cfg.baseURL}/share/collage/${data.id}`;
+    } catch (e) {
+      // fallback to origin
+      data.shareURL = `${window.location.origin}/share/collage/${data.id}`;
+    }
     return data;
   } catch (err) {
     console.error('❌ Failed to save collage:', err);
@@ -198,7 +212,8 @@ function refreshThumbnails() {
 }
 
 // Apply safe capture filter and draw
-function captureFrameToCanvas() {
+// Returns a Promise that resolves with the dataURL after canvas is fully rendered
+async function captureFrameToCanvas() {
   // Ensure video is ready and has dimensions
   if (video.videoWidth === 0 || video.videoHeight === 0) {
     console.warn('Video not ready, using fallback dimensions');
@@ -211,7 +226,11 @@ function captureFrameToCanvas() {
     ctx.textAlign = 'center';
     ctx.textBaseline = 'middle';
     ctx.fillText('Camera not ready', 320, 240);
-    return canvas.toDataURL('image/jpeg', 0.92);
+    return new Promise(resolve => {
+      requestAnimationFrame(() => {
+        resolve(canvas.toDataURL('image/jpeg', 0.92));
+      });
+    });
   }
 
   const w = video.videoWidth;
@@ -226,18 +245,41 @@ function captureFrameToCanvas() {
   ctx.drawImage(video, 0, 0, w, h);
   ctx.restore();
 
-  // produce dataURL (jpg)
-  return canvas.toDataURL('image/jpeg', 0.92);
+  // Ensure canvas pixel data is fully flushed before converting to dataURL
+  return new Promise(resolve => {
+    requestAnimationFrame(() => {
+      // Small delay to ensure pixel data is ready
+      setTimeout(() => {
+        resolve(canvas.toDataURL('image/jpeg', 0.92));
+      }, 10);
+    });
+  });
 }
 
-// Redraw collage (2x2 or vertical strip) into canvas and return dataURL
-function redrawCollagePreview() {
+// Redraw collage (2x2 or vertical strip) into canvas and return Promise with dataURL
+// Returns Promise to ensure all images are loaded and canvas is fully rendered
+async function redrawCollagePreview() {
   // Show canvas and hide live preview
   collageStage.style.display = 'flex';
   liveStage.style.display = 'none';
 
   ctx.save();
   ctx.fillStyle = '#000';
+
+  // Helper function to load image and return promise
+  function loadImage(dataUrl) {
+    return new Promise((resolve) => {
+      const img = new Image();
+      img.onload = () => resolve(img);
+      img.onerror = () => resolve(null);
+      img.src = dataUrl;
+    });
+  }
+
+  // Pre-load all images before drawing to ensure they're ready
+  const loadedImages = await Promise.all(
+    collageImages.map(dataUrl => loadImage(dataUrl))
+  );
 
   if (collageFormat === 'vertical') {
     // Vertical strip: 4 images stacked vertically
@@ -255,18 +297,8 @@ function redrawCollagePreview() {
       const x = pad;
       const y = pad + i * (cellH + pad);
 
-      if (collageImages[i]) {
-        const img = new Image();
-        img.src = collageImages[i];
-        if (img.complete) {
-          drawImageCover(ctx, img, x, y, cellW, cellH);
-        } else {
-          ((imgCopy, _x, _y, _w, _h) => {
-            imgCopy.onload = () => {
-              drawImageCover(ctx, imgCopy, _x, _y, _w, _h);
-            };
-          })(img, x, y, cellW, cellH);
-        }
+      if (loadedImages[i]) {
+        drawImageCover(ctx, loadedImages[i], x, y, cellW, cellH);
       } else {
         ctx.fillStyle = '#333';
         ctx.fillRect(x, y, cellW, cellH);
@@ -295,18 +327,8 @@ function redrawCollagePreview() {
       const x = pad + col * (cellW + pad);
       const y = pad + row * (cellH + pad);
 
-      if (collageImages[i]) {
-        const img = new Image();
-        img.src = collageImages[i];
-        if (img.complete) {
-          drawImageCover(ctx, img, x, y, cellW, cellH);
-        } else {
-          ((imgCopy, _x, _y, _w, _h) => {
-            imgCopy.onload = () => {
-              drawImageCover(ctx, imgCopy, _x, _y, _w, _h);
-            };
-          })(img, x, y, cellW, cellH);
-        }
+      if (loadedImages[i]) {
+        drawImageCover(ctx, loadedImages[i], x, y, cellW, cellH);
       } else {
         ctx.fillStyle = '#333';
         ctx.fillRect(x, y, cellW, cellH);
@@ -320,8 +342,19 @@ function redrawCollagePreview() {
   }
 
   ctx.restore();
-  // final dataURL
-  return canvas.toDataURL('image/jpeg', 0.92);
+  
+  // Wait for all images to be loaded and ensure canvas is fully rendered
+  return new Promise(resolve => {
+    // Use requestAnimationFrame twice to ensure all rendering is complete
+    requestAnimationFrame(() => {
+      requestAnimationFrame(() => {
+        // Small delay to ensure pixel data is ready
+        setTimeout(() => {
+          resolve(canvas.toDataURL('image/jpeg', 0.92));
+        }, 15);
+      });
+    });
+  });
 }
 
 // Utility: draw image in "cover" mode into rect
@@ -343,29 +376,48 @@ async function showQRCode(data) {
   try {
     // If data is a share URL, generate QR for network-accessible URL
     if (data && data.includes('/share/')) {
-      // Get network IP for sharing
+      // Get network baseURL from server (e.g. http://192.168.1.41:3000)
       const configResponse = await fetch('/api/config');
       const config = await configResponse.json();
-      const networkUrl = data.replace('localhost', config.baseURL.split('://')[1].split(':')[0]);
+      // build proper network URL by replacing origin with config.baseURL
+      try {
+        const parsed = new URL(data);
+        const networkUrl = `${config.baseURL}${parsed.pathname}`;
 
-      // Generate QR code for the share URL
-      new QRCode(qrCodeContainer, {
-        text: networkUrl,
-        width: 150,
-        height: 150,
-        colorDark: "#000000",
-        colorLight: "#ffffff",
-        correctLevel: QRCode.CorrectLevel.L
-      });
+        // Generate QR code for the share URL
+        new QRCode(qrCodeContainer, {
+          text: networkUrl,
+          width: 150,
+          height: 150,
+          colorDark: "#000000",
+          colorLight: "#ffffff",
+          correctLevel: QRCode.CorrectLevel.L
+        });
 
-      // Add text showing the URL
-      const urlText = document.createElement('div');
-      urlText.style.fontSize = '12px';
-      urlText.style.color = '#666';
-      urlText.style.marginTop = '5px';
-      urlText.style.wordBreak = 'break-all';
-      urlText.textContent = networkUrl;
-      qrCodeContainer.appendChild(urlText);
+        // Add text showing the URL for scanning
+        const urlText = document.createElement('div');
+        urlText.style.fontSize = '12px';
+        urlText.style.color = '#666';
+        urlText.style.marginTop = '5px';
+        urlText.style.wordBreak = 'break-all';
+        urlText.textContent = networkUrl;
+        qrCodeContainer.appendChild(urlText);
+
+        // Also provide a direct download link for the current device
+        const a = document.createElement('a');
+        a.href = networkUrl;
+        a.textContent = 'Open / Download on this device';
+        a.style.display = 'inline-block';
+        a.style.marginTop = '8px';
+        a.style.color = '#fff';
+        a.style.padding = '6px 10px';
+        a.style.background = '#333';
+        a.style.borderRadius = '6px';
+        a.style.textDecoration = 'none';
+        downloadLinkWrap.appendChild(a);
+      } catch (e) {
+        console.error('Invalid share URL', e);
+      }
     } else if (data && data.startsWith('data:')) {
       // For data URLs, provide direct download link
       const a = document.createElement('a');
@@ -401,8 +453,8 @@ async function autoCaptureSequence() {
     try {
       stageCaption.textContent = `Taking in 3s (${i + 1}/4)`;
       await startCountdown(3, (n) => stageCaption.textContent = `Taking in ${n}s (${i + 1}/4)`);
-      // capture
-      const dataURL = captureFrameToCanvas();
+      // capture (now async - wait for canvas to be fully rendered)
+      const dataURL = await captureFrameToCanvas();
       // add newest at front
       collageImages.unshift(dataURL);
       if (collageImages.length > 4) collageImages.length = 4; // trim
@@ -426,8 +478,8 @@ async function autoCaptureSequence() {
 
   // after 4 captures
   isCollageMode = true;
-  // redraw collage into canvas and produce final collage data
-  const collageData = redrawCollagePreview();
+  // redraw collage into canvas and produce final collage data (now async)
+  const collageData = await redrawCollagePreview();
   lastDataURL = collageData;
   
   // Save collage to database
@@ -443,7 +495,7 @@ async function autoCaptureSequence() {
 async function singleCaptureFlow() {
   stageCaption.textContent = 'Taking in 3s...';
   await startCountdown(3, n => stageCaption.textContent = `Taking in ${n}s`);
-  const dataURL = captureFrameToCanvas();
+  const dataURL = await captureFrameToCanvas();
   collageImages = [dataURL];
   refreshThumbnails();
   isCollageMode = false;
@@ -483,10 +535,10 @@ captureBtn.addEventListener('click', () => {
 });
 
 // Download button
-downloadBtn.addEventListener('click', () => {
+downloadBtn.addEventListener('click', async () => {
   if (isCollageMode && collageImages.length >= 4) {
-    // Ensure canvas contains collage (higher-res)
-    const data = redrawCollagePreview();
+    // Ensure canvas contains collage (higher-res) - now async
+    const data = await redrawCollagePreview();
     const a = document.createElement('a');
     a.href = data;
     a.download = 'photobooth_collage.jpg';

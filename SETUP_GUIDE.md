@@ -301,4 +301,44 @@ Check logs in terminal for error messages. Common issues are usually:
 
 ---
 
+# How to Run Photobooth with MySQL Database
+
+1. **Start MySQL Server**
+   - Make sure MySQL is running on your PC.
+
+2. **Import Database Schema**
+   - Open MySQL Workbench.
+   - Connect to your server (host: 127.0.0.1, user: root, password: !Champorado123).
+   - Open `init.sql` and execute it to create the `photobooth` database and tables.
+
+3. **Install Project Dependencies**
+   - Open PowerShell in your project folder.
+   - Run:
+     ```powershell
+     npm install
+     ```
+
+4. **Start the Backend Server**
+   - In the same PowerShell window, run:
+     ```powershell
+     node server.js
+     ```
+   - This will start the Node.js backend and connect to your database.
+
+5. **Open the Web App**
+   - Open your browser and go to:
+     ```
+     http://localhost:3000
+     ```
+   - You should now see your photobooth app running and connected to MySQL.
+
+---
+
+**Troubleshooting:**
+- If you get a database connection error, check your credentials in `db.js`.
+- Make sure MySQL server is running and the `photobooth` database exists.
+- If you need to change the port, update `server.js` and use the new port in your browser.
+
+---
+
 **Your photobooth is now database-enabled! 🎉📸**
